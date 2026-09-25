@@ -1,0 +1,76 @@
+# Laya document-classifier app: UI + file extractors + OCR + both checkpoints
+# baked in, so the container starts fast and works offline.
+#   docker build -f Dockerfile.classifier -t laya-classifier .
+#   docker run --rm -p 127.0.0.1:8420:8420 laya-classifier
+# or: docker compose up --build
+ARG PYTHON_IMAGE=python:3.11-slim-bookworm
+
+FROM ${PYTHON_IMAGE} AS build
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Same torch policy as the base image: CPU wheels, verified at build time.
+ARG TORCH_INDEX=cpu
+ARG TORCH_VERSION=2.14.0
+COPY docker/check_torch.py /opt/check_torch.py
+RUN pip install "torch==${TORCH_VERSION}" --index-url https://download.pytorch.org/whl/${TORCH_INDEX} \
+    && python /opt/check_torch.py "${TORCH_INDEX}" \
+    && pip check
+
+WORKDIR /src
+COPY pyproject.toml setup.py README.md LICENSE ./
+COPY laya/ ./laya/
+# serve: fastapi/uvicorn/multipart. classifier: pillow, pytesseract, pymupdf,
+# pypdf, python-docx, python-pptx, openpyxl (file extractors).
+RUN pip install ".[serve,classifier]" && pip check
+
+# Checkpoints in their own stage: code changes never re-download 2.2 GB.
+FROM build AS models
+
+ENV HF_HOME=/opt/models
+RUN python -c "from huggingface_hub import snapshot_download; \
+    snapshot_download('convaiinnovations/laya'); \
+    snapshot_download('convaiinnovations/laya-multilingual')"
+
+FROM ${PYTHON_IMAGE} AS runtime
+
+LABEL org.opencontainers.image.title="Laya document classifier" \
+      org.opencontainers.image.source="https://github.com/NandhaKishorM/laya" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+# TORCH_DISABLE_NATIVE_JIT: stock kernels, same reason as the base image (#365).
+ENV PATH="/opt/venv/bin:$PATH" \
+    TORCH_DISABLE_NATIVE_JIT=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    USE_TF=0 \
+    USE_TORCH=1 \
+    TOKENIZERS_PARALLELISM=false \
+    OMP_NUM_THREADS=4 \
+    LAYA_DEVICE=cpu \
+    HF_HOME=/opt/models \
+    LAYA_HOST=0.0.0.0 \
+    LAYA_PORT=8420
+
+# tesseract: OCR of image uploads and scanned PDFs (pytesseract shells out).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 laya \
+    && useradd --uid 10001 --gid laya --create-home laya
+
+COPY --from=build /opt/venv /opt/venv
+COPY --from=models --chown=laya:laya /opt/models /opt/models
+COPY --chown=laya:laya doc_classifier_app.py /home/laya/doc_classifier_app.py
+USER laya
+WORKDIR /home/laya
+
+EXPOSE 8420
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8420/', timeout=4)"
+
+ENTRYPOINT ["python", "doc_classifier_app.py"]

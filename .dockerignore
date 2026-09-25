@@ -1,6 +1,8 @@
 # Only package sources, the runnable example and build metadata belong here.
 **
 !Dockerfile
+!Dockerfile.classifier
+!docker-compose.yml
 !.dockerignore
 !pyproject.toml
 !setup.py
@@ -15,6 +17,7 @@
 !examples/docker/
 !examples/docker/quickstart.py
 !examples/docker/request.json
+!doc_classifier_app.py
 **/__pycache__/
 **/*.pyc
 **/.env

@@ -54,6 +54,18 @@ structured = ["pydantic>=2.0.0"]
 
 onnx = ["onnx", "onnxruntime"]
 
+# `pip install laya[classifier]` adds the document-classifier app's file
+# extractors (doc_classifier_app.py). Needs the tesseract binary for OCR.
+classifier = [
+    "pillow>=10.0.0",
+    "pytesseract>=0.3.10",
+    "pymupdf>=1.24.0",
+    "pypdf>=4.0.0",
+    "python-docx>=1.1.0",
+    "python-pptx>=1.0.0",
+    "openpyxl>=3.1.0",
+]
+
 # `pip install laya[langchain]` adds the LangChain / LangGraph integrations (laya.integrations).
 langchain = [
     "langchain-core>=0.2.0",

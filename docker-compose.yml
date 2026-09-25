@@ -1,0 +1,14 @@
+services:
+  classifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.classifier
+    image: laya-classifier
+    container_name: laya-classifier
+    # Localhost-only on the host; the classifier needs no inbound exposure.
+    ports:
+      - "127.0.0.1:8420:8420"
+    restart: unless-stopped
+    # Both checkpoints resident on CPU: ~2.5 GB RSS warm. Give Docker Desktop
+    # at least 4 GB if you lower this.
+    mem_limit: 4g

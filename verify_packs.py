@@ -7,7 +7,7 @@ and — optionally — your own files, passed as path=expected_type pairs:
 
     python verify_packs.py ~/Downloads/resume.pdf=resume ~/Downloads/tracker.csv=spreadsheet
 """
-import json, os, sys, time, urllib.request
+import json, os, sys, time, urllib.error, urllib.request
 
 BASE = os.environ.get("LAYA_CLASSIFIER_URL", "http://127.0.0.1:8420")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,7 +32,10 @@ def post(fields, file_path=None):
     parts.append(f"--{boundary}--\r\n".encode())
     req = urllib.request.Request(BASE + "/classify", data=b"".join(parts),
                                  headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    return json.loads(urllib.request.urlopen(req, timeout=300).read())
+    try:
+        return json.loads(urllib.request.urlopen(req, timeout=300).read())
+    except urllib.error.HTTPError as e:
+        return {"type": "ERROR", "confidence": 0.0, "detail": e.read().decode()[:200]}
 
 PACK_OF = {"chat_transcript": "correspondence", "exam": "education & research",
            "blog_post": "media & publishing", "newsletter": "media & publishing",

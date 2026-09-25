@@ -20,6 +20,7 @@ os.environ.setdefault("HF_HOME", str(Path(__file__).resolve().parent / ".hf_cach
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from laya import Router
+from laya.lang import analyse as lang_analyse
 
 DEFAULT_TYPES = {
     # --- career & HR ---
@@ -239,7 +240,19 @@ def classify(text: str, criteria: dict, filename: str = "") -> dict:
 
     if len(text) > HEAD_CHARS:
         head = text[:HEAD_CHARS]
-        if router.route(head).model == "multilingual":
+        # Multilingual only on HARD non-English evidence: non-latin script or
+        # actual diacritics. Measured: a bare language guess misroutes symbol-
+        # heavy Latin-script text (an env/config file "looks like pt") and the
+        # multilingual checkpoint then returns a flat garbage spread (top
+        # confidence 0.21). Accent-free French/Spanish prose now goes to the
+        # English head instead — acceptable: it mis-grades sometimes, the
+        # reverse misroute garbages every time.
+        det = lang_analyse(head)
+        diacritic_rate = det.get("diacritic_rate")
+        use_multilingual = (not det["is_english"]) and (
+            det["script"] != "latin"
+            or (isinstance(diacritic_rate, (int, float)) and diacritic_rate > 0))
+        if use_multilingual:
             # genuinely non-English: multilingual checkpoint reads up to 8,192 tokens
             result = router.predict(make_state(text), questions, model="multilingual", max_len=8192)
         else:
@@ -275,6 +288,15 @@ async def classify_endpoint(
             text = extract_text(filename, data)
         except Exception as e:
             return JSONResponse({"error": f"could not extract text from {filename}: {e}"}, status_code=400)
+        # Measured: classifying a near-empty extraction (e.g. a photo of a
+        # logo -> 35 OCR'd chars) returns confident garbage ("legal contract
+        # 97%"). Refuse instead and say why.
+        if len("".join(ch for ch in text if ch.isalnum())) < 40:
+            return JSONResponse(
+                {"error": f"could not extract enough readable text from {filename} "
+                          f"(got {len(text.strip())} chars). If it's an image or scan, "
+                          "use a sharper, well-lit, text-focused shot — or paste the text."},
+                status_code=400)
     text = (text or "").strip()
     if not text:
         return JSONResponse({"error": "empty document"}, status_code=400)
@@ -449,4 +471,5 @@ function render(j) {
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8420)
+    uvicorn.run(app, host=os.environ.get("LAYA_HOST", "127.0.0.1"),
+                port=int(os.environ.get("LAYA_PORT", "8420")))

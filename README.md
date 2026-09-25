@@ -16,7 +16,7 @@ git clone https://github.com/AshutoshKY/laya-document-classifier.git
 cd laya-document-classifier
 
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[serve]" pypdf python-docx python-pptx openpyxl pymupdf pillow pytesseract
+pip install -e ".[serve,classifier]"
 brew install tesseract   # OCR engine for photos/scans (or your platform's package manager)
 
 python doc_classifier_app.py
@@ -25,6 +25,24 @@ python doc_classifier_app.py
 
 First run downloads the Laya checkpoints (~2.2 GB) from Hugging Face into
 `.hf_cache/` (the app pins `HF_HOME` there; it's gitignored).
+
+## Docker (everything in one image)
+
+`Dockerfile.classifier` builds a self-contained image: app, extractors,
+tesseract OCR, and both checkpoints baked in — starts in seconds, works
+offline, no local Python needed.
+
+```bash
+docker build -f Dockerfile.classifier -t laya-classifier .
+docker run --rm -p 127.0.0.1:8420:8420 laya-classifier
+# or: docker compose up --build
+```
+
+Host/port are env-configurable: `LAYA_HOST` (default `127.0.0.1` locally,
+`0.0.0.0` in the image), `LAYA_PORT` (default `8420`). `HF_HOME` points at
+`/opt/models` in the image; mount a volume over it to swap checkpoints without
+rebuilding. The compose file caps memory at 4 GB (warm RSS ≈ 2.5 GB, both
+checkpoints resident on CPU).
 
 ## What you get
 
@@ -71,6 +89,13 @@ Why packs instead of one giant list — measured:
   for tabular data, measurably hurts prose.
 - Long docs classify on the first ~1,800 chars (the head carries the genre); the
   8K multilingual checkpoint is used only for genuinely non-English text.
+- Multilingual routing is gated on **hard evidence only** (non-latin script or
+  actual diacritics, via `laya.lang.analyse`). Measured: a bare language guess
+  misroutes symbol-heavy Latin text (an env/config file "looks like pt") and the
+  multilingual checkpoint then returns a flat garbage spread (top ≈ 0.21).
+- Uploads yielding under 40 alphanumeric chars after extraction are **refused**
+  with a clear error. Measured: classifying 35 OCR'd chars of a logo photo
+  returned "legal contract 97%".
 - Confidence is a ranking signal, not a calibrated probability (the upstream
   checkpoint ships broken calibration temps).
 - Criteria wording is pack-context dependent: the invoice/receipt near-pair uses
@@ -82,6 +107,7 @@ Why packs instead of one giant list — measured:
 | path | what |
 |---|---|
 | `doc_classifier_app.py` | the app: FastAPI server + inline UI, port 8420 |
+| `Dockerfile.classifier` / `docker-compose.yml` | self-contained image: app + OCR + both checkpoints baked in |
 | `laya/` | the Laya engine source (installed editable) — engine docs in `LAYA.md` |
 | `probes.json` | 52 synthetic probe docs (one per category) |
 | `test_quickstart.py` | reproduces the upstream quickstart end-to-end |
