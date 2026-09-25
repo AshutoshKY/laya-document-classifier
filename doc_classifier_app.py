@@ -405,7 +405,7 @@ drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over');
                      if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); };
 function setFile(f) { picked = f; drop.innerHTML = '📄 <b>' + f.name + '</b> — ' +
                       (f.size/1024).toFixed(1) + ' KB (click to change)'; }
-const DROP_HTML = 'Drop any file here — <b>text, PDF, Word, Excel, slides, or an image</b> (photos/scans are OCR\'d) — or click to browse';
+const DROP_HTML = "Drop any file here — <b>text, PDF, Word, Excel, slides, or an image</b> (photos/scans are OCR'd) — or click to browse";
 ta.oninput = () => { if (ta.value.trim()) { picked = null; fileIn.value=''; drop.innerHTML = DROP_HTML; } };
 
 go.onclick = async () => {
