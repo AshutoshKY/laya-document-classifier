@@ -36,17 +36,25 @@ def post(fields, file_path=None):
 
 PACK_OF = {"chat_transcript": "correspondence", "exam": "education & research",
            "blog_post": "media & publishing", "newsletter": "media & publishing",
-           "presentation": "work & tech ops"}
+           "presentation": "work & tech ops",
+           "boarding_pass": "everyday life", "train_ticket": "everyday life",
+           "hotel_booking": "everyday life", "cheque": "finance & commerce",
+           "id_document": "legal & government"}
 
-g10 = ["resume", "research_paper", "news_article", "invoice", "manual", "book",
-       "recipe", "magazine", "legal_contract", "business_report"]
+# general pack: 10-genre suite plus the everyday uploads it must catch
+G_CHECKS = {"resume": "resume", "research_paper": "research_paper",
+            "news_article": "news_article", "invoice": "invoice", "manual": "manual",
+            "book": "book", "recipe": "recipe", "magazine": "magazine",
+            "legal_contract": "legal_contract", "business_report": "business_report",
+            "receipt": "receipt", "boarding_pass": "travel_ticket",
+            "train_ticket": "travel_ticket"}
 ok = 0
-for n in g10:
+for n, expect in G_CHECKS.items():
     j = post({"text": probes[n], "pack": "general"})
-    ok += j["type"] == n
-    if j["type"] != n:
-        print(f"MISS(general) {n} -> {j['type']} {j['confidence']:.2f}")
-print(f"general pack / 10-genre suite: {ok}/10")
+    ok += j["type"] == expect
+    if j["type"] != expect:
+        print(f"MISS(general) {n} -> {j['type']} {j['confidence']:.2f} (want {expect})")
+print(f"general pack suite: {ok}/{len(G_CHECKS)}")
 
 ok = 0
 for n, p in PACK_OF.items():

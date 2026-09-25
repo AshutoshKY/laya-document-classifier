@@ -3,10 +3,11 @@
 Run:  .venv/bin/python doc_classifier_app.py
 Open: http://127.0.0.1:8420
 
-Paste text or drop a file (.txt/.md/.pdf/.docx). Laya answers a typed
-`choice` question in a single forward pass — no text generation.
-Long documents are routed to laya-multilingual with max_len=8192
-(per the repo README's long-document guidance).
+Paste text or drop any file: .txt/.md/.pdf (incl. scanned, via OCR),
+.docx/.pptx/.xlsx/.csv, or an image (.png/.jpg/.webp/.tif/.bmp — OCR'd
+with local tesseract). Laya answers a typed `choice` question in a single
+forward pass — no text generation. Long documents are routed to
+laya-multilingual with max_len=8192 (per the repo README's guidance).
 """
 import io
 import json
@@ -34,12 +35,14 @@ DEFAULT_TYPES = {
     "bank_statement": "bank or credit card statement: account number, statement period, list of transactions, running balance",
     "tax_document": "tax return or tax form: tax authority fields, filing year, income and deduction figures",
     "insurance_document": "insurance policy or claim: policy number, coverage details, premiums, incident description",
+    "cheque": "a bank check: 'Pay to the order of' payee line, amount written in words and again in digits, cheque number, MICR line with routing and account numbers, signature line",
     "business_report": "organizational performance document: executive summary, revenue and growth %, KPIs, quarter labels, margins, analysis",
     # --- legal & government ---
     "legal_contract": "legal document: agreement, contract, terms and conditions, clauses, parties",
     "court_document": "court filing or ruling: case number, plaintiff and defendant, motion, order, judge",
     "patent": "legal patent text: patent number, 'Claims' of an invention, field of invention, prior art references",
     "government_form": "official government form or application: agency name, numbered fields, declarations, official-use boxes",
+    "id_document": "an identity document such as a passport, driver's license or national ID card: document number, full name, date of birth, nationality or issuing state, date of issue, expiry date",
     # --- work & operations ---
     "support_ticket": "a tracked issue: ticket ID number, status and priority fields, reporter and assignee, steps to reproduce, resolution",
     "technical_spec": "a design document for a software system: architecture, API contracts, data models, bug and feature lists, configuration, prompts for AI systems",
@@ -76,7 +79,10 @@ DEFAULT_TYPES = {
     # --- everyday life ---
     "recipe": "recipe or cookbook page: ingredients list and cooking steps",
     "menu": "restaurant or cafe menu: sections of dishes with descriptions and prices",
-    "travel_document": "travel booking or boarding pass: airline name with flight number like 6E-214, booking reference code, departure and arrival times, seat number",
+    "travel_ticket": "a travel ticket or boarding pass for a flight, train or bus: carrier name, flight or train number, booking reference or PNR code, departure and arrival points, seat or coach number",
+    "boarding_pass": "an airline boarding pass or flight e-ticket: airline name, flight number like 6E-214 or UA1234, 3-letter airport codes, seat number, gate, boarding time, barcode",
+    "train_ticket": "a railway ticket: train name and number, PNR or reservation code, from and to station names, coach and seat/berth like S4-32, fare class, journey date",
+    "hotel_booking": "a hotel reservation confirmation: hotel name, check-in and check-out dates, room type, nightly rate, confirmation number, guest name",
     "medical_record": "patient medical document: diagnosis, prescriptions, lab results, vital signs, physician notes",
     "notes": "personal notes: fragments, bullets, reminders, unstructured jottings",
     "todo_list": "task list or checklist: action items with checkboxes or markers",
@@ -98,13 +104,15 @@ HEAD_CHARS = 1800  # ~450 tokens; genre signal lives in the head of a document
 GENERAL_KEYS = [
     "resume", "research_paper", "news_article", "invoice", "manual", "book",
     "recipe", "magazine", "legal_contract", "business_report",
-    "personal_letter", "spreadsheet", "technical_spec", "other",
+    "personal_letter", "spreadsheet", "technical_spec", "receipt",
+    "travel_ticket", "other",
 ]
 PACK_GROUPS = {
     "career & hiring": ["resume", "cover_letter", "job_posting", "offer_letter", "payslip"],
     "finance & commerce": ["invoice", "receipt", "purchase_order", "bank_statement",
-                           "tax_document", "insurance_document", "business_report"],
-    "legal & government": ["legal_contract", "court_document", "patent", "government_form"],
+                           "tax_document", "insurance_document", "cheque", "business_report"],
+    "legal & government": ["legal_contract", "court_document", "patent", "government_form",
+                           "id_document"],
     "work & tech ops": ["support_ticket", "technical_spec", "manual", "meeting_notes",
                         "memo", "shipping_document", "product_catalog", "presentation"],
     "correspondence": ["email", "personal_letter", "invitation", "chat_transcript"],
@@ -112,8 +120,21 @@ PACK_GROUPS = {
                            "blog_post", "review", "advertisement"],
     "creative writing": ["book", "essay", "poem", "lyrics", "screenplay", "religious_text"],
     "education & research": ["research_paper", "academic_transcript", "exam", "survey", "certificate"],
-    "everyday life": ["recipe", "menu", "travel_document", "medical_record", "notes", "todo_list"],
+    "everyday life": ["recipe", "menu", "boarding_pass", "train_ticket", "hotel_booking",
+                      "medical_record", "notes", "todo_list"],
     "data & machine output": ["spreadsheet", "source_code", "log_file"],
+}
+
+# Measured: the invoice/receipt near-pair resolves differently depending on
+# pack context. v3 wording is required in "general" (orig flips receipt ->
+# invoice 0.82), but the SAME v3 wording flips receipt -> purchase_order 0.53
+# in "finance & commerce", where orig wording is the only working pair.
+# So wording is overridden per pack here — do not unify these.
+PACK_OVERRIDES: dict = {
+    "general": {
+        "invoice": "requests FUTURE payment: invoice number, 'amount due', pay-by date, terms like Net 30, billed to a company",
+        "receipt": "a store or restaurant bill settled at the counter: items with prices, TOTAL, payment card digits, change, cashier, 'thank you'",
+    },
 }
 
 PACKS: dict = {"general": {k: DEFAULT_TYPES[k] for k in GENERAL_KEYS}}
@@ -122,9 +143,44 @@ for _name, _keys in PACK_GROUPS.items():
     # unusual-but-valid members (chat logs, exams, blog posts all collapsed
     # into it). A pack is already domain-scoped by the user's choice.
     PACKS[_name] = {k: DEFAULT_TYPES[k] for k in _keys}
+for _name, _over in PACK_OVERRIDES.items():
+    PACKS[_name].update(_over)
 
 app = FastAPI(title="Laya Document Classifier")
 router = Router()
+
+
+IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
+
+
+def _ocr_pil_image(img) -> str:
+    import pytesseract
+    import shutil
+    cmd = shutil.which("tesseract") or "/opt/homebrew/bin/tesseract"
+    pytesseract.pytesseract.tesseract_cmd = cmd
+    if img.mode not in ("L", "RGB"):
+        img = img.convert("RGB")
+    return pytesseract.image_to_string(img)
+
+
+def _ocr_image(data: bytes) -> str:
+    from PIL import Image
+    return _ocr_pil_image(Image.open(io.BytesIO(data)))
+
+
+def _ocr_pdf(data: bytes, max_pages: int = 10) -> str:
+    # Scanned PDF (no text layer): render pages and OCR them.
+    import pymupdf
+    from PIL import Image
+    chunks = []
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        for page in doc:
+            if len(chunks) >= max_pages:
+                break
+            pix = page.get_pixmap(dpi=200)
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            chunks.append(_ocr_pil_image(img))
+    return "\n".join(chunks)
 
 
 def extract_text(filename: str, data: bytes) -> str:
@@ -132,11 +188,32 @@ def extract_text(filename: str, data: bytes) -> str:
     if ext == ".pdf":
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(data))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        if len(text.strip()) < 40:  # image-only scan: no text layer
+            text = _ocr_pdf(data)
+        return text
     if ext == ".docx":
         import docx
         d = docx.Document(io.BytesIO(data))
         return "\n".join(p.text for p in d.paragraphs)
+    if ext == ".pptx":
+        from pptx import Presentation
+        prs = Presentation(io.BytesIO(data))
+        slides = []
+        for i, slide in enumerate(prs.slides, 1):
+            lines = [sh.text_frame.text for sh in slide.shapes if sh.has_text_frame]
+            slides.append(f"Slide {i}:\n" + "\n".join(lines))
+        return "\n\n".join(slides)
+    if ext == ".xlsx":
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        rows = []
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(values_only=True):
+                rows.append(", ".join("" if c is None else str(c) for c in row))
+        return "\n".join(rows)
+    if ext in IMG_EXTS:
+        return _ocr_image(data)
     return data.decode("utf-8", errors="replace")
 
 
@@ -274,14 +351,14 @@ PAGE = """<!doctype html>
   <h1>Laya Document Classifier</h1>
   <div class="sub">Local, single-forward-pass classification · <code>convaiinnovations/laya</code> · no data leaves this machine</div>
 
-  <div id="drop">Drop a file here — <b>.txt .md .pdf .docx</b> — or click to browse</div>
-  <input id="file" type="file" accept=".txt,.md,.markdown,.pdf,.docx,.csv,.log,.json,.html" hidden>
+  <div id="drop">Drop any file here — <b>text, PDF, Word, Excel, slides, or an image</b> (photos/scans are OCR'd) — or click to browse</div>
+  <input id="file" type="file" accept=".txt,.md,.markdown,.pdf,.docx,.pptx,.csv,.tsv,.xlsx,.log,.json,.html,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp" hidden>
   <textarea id="text" placeholder="…or paste document text here"></textarea>
 
   <div class="packrow">
     <label for="pack">Category pack</label>
     <select id="pack">
-      <option value="general" selected>General — 14 most common types</option>
+      <option value="general" selected>General — 16 most common types</option>
       <option value="career &amp; hiring">Career &amp; hiring — resumes, job ads, offer letters, pay stubs</option>
       <option value="finance &amp; commerce">Finance &amp; commerce — invoices, receipts, POs, statements, tax, insurance</option>
       <option value="legal &amp; government">Legal &amp; government — contracts, court docs, patents, official forms</option>
@@ -290,7 +367,7 @@ PAGE = """<!doctype html>
       <option value="media &amp; publishing">Media &amp; publishing — news, press releases, newsletters, magazines, blogs</option>
       <option value="creative writing">Creative writing — books, essays, poems, lyrics, screenplays, scripture</option>
       <option value="education &amp; research">Education &amp; research — papers, transcripts, exams, surveys, certificates</option>
-      <option value="everyday life">Everyday life — recipes, menus, travel bookings, medical records, notes</option>
+      <option value="everyday life">Everyday life — recipes, menus, flight/train tickets, hotel bookings, medical records</option>
       <option value="data &amp; machine output">Data &amp; machine output — spreadsheets, source code, log files</option>
     </select>
     <span>pick the pack closest to your document for best accuracy</span>
@@ -328,8 +405,8 @@ drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over');
                      if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); };
 function setFile(f) { picked = f; drop.innerHTML = '📄 <b>' + f.name + '</b> — ' +
                       (f.size/1024).toFixed(1) + ' KB (click to change)'; }
-ta.oninput = () => { if (ta.value.trim()) { picked = null; fileIn.value='';
-                     drop.innerHTML = 'Drop a file here — <b>.txt .md .pdf .docx</b> — or click to browse'; } };
+const DROP_HTML = 'Drop any file here — <b>text, PDF, Word, Excel, slides, or an image</b> (photos/scans are OCR\'d) — or click to browse';
+ta.oninput = () => { if (ta.value.trim()) { picked = null; fileIn.value=''; drop.innerHTML = DROP_HTML; } };
 
 go.onclick = async () => {
   err.textContent = ''; document.getElementById('result').style.display = 'none';
@@ -351,7 +428,6 @@ function render(j) {
   document.getElementById('rtype').textContent = j.type.replace(/_/g, ' ');
   document.getElementById('rconf').textContent = (j.confidence*100).toFixed(1) + '% confident';
   document.getElementById('rmeta').textContent =
-    (j.group ? 'group: ' + j.group.replace(/_/g,' ') + ' (' + (j.group_confidence*100).toFixed(0) + '%) · ' : '') +
     j.chars.toLocaleString() + ' chars · model: ' + j.routing.model + ' · ' + j.routing.reason;
   const bars = document.getElementById('bars'); bars.innerHTML = '';
   j.distribution.forEach((d, i) => {
